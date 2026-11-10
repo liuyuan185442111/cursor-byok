@@ -94,6 +94,56 @@ fn captured_kv_ack_hex_decodes_as_agent_client_message() {
     ));
 }
 
+#[test]
+fn bidi_append_binary_and_hex_decode_the_same_message() {
+    let payload = hex::decode("1a0408011a00").unwrap();
+    for binary in [false, true] {
+        let request = ai::BidiAppendRequest {
+            request_id: Some(ai::BidiRequestId {
+                request_id: "encoding-test".into(),
+            }),
+            append_seqno: 7,
+            data: if binary {
+                String::new()
+            } else {
+                hex::encode(&payload)
+            },
+            data_binary: if binary { payload.clone() } else { Vec::new() },
+        };
+        let wire = request.encode_to_vec();
+        let request = ai::BidiAppendRequest::decode(wire.as_slice()).unwrap();
+        let decoded = cursor::bidi::decode(&request).unwrap();
+        assert_eq!(decoded.request_id, "encoding-test");
+        assert_eq!(decoded.seqno, 7);
+        assert_eq!(decoded.message.encode_to_vec(), payload);
+    }
+}
+
+#[test]
+fn bidi_append_rejects_invalid_payloads_and_missing_request_id() {
+    for (data, data_binary, request_id, expected) in [
+        ("", vec![], "test", "contains no AgentClientMessage"),
+        ("00", vec![0], "test", "contains both data and data_binary"),
+        ("not-hex", vec![], "test", "invalid BidiAppend hex"),
+        ("", vec![0xff], "test", "protobuf decode error"),
+        ("ff", vec![], "test", "protobuf decode error"),
+        ("", vec![0x1a, 0], "", "request_id is required"),
+    ] {
+        let request = ai::BidiAppendRequest {
+            data: data.into(),
+            data_binary,
+            request_id: Some(ai::BidiRequestId {
+                request_id: request_id.into(),
+            }),
+            ..Default::default()
+        };
+        let error = cursor::bidi::decode(&request)
+            .err()
+            .expect("must reject invalid request");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
 #[tokio::test]
 async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     let (_directory, store) = fixtures::temp_store().await;
